@@ -1,14 +1,15 @@
 package couchdb
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 // Server - Basic struct for a connection
@@ -16,12 +17,25 @@ type Server struct {
 	Address         string
 	Port            int
 	SSL             bool
+	Authentication  Authentication
 	Database        string
-	SchemeAuthority string
+	schemeAuthority string
 	ServerInfo      ServerInfo
-	TLSConfig       *tls.Config
-	HTTPTransport   *http.Transport
-	HTTPClient      *http.Client
+	tlsConfig       *tls.Config
+	httpTransport   *http.Transport
+	httpClient      *http.Client
+}
+
+// Authentication -
+type Authentication struct {
+	BasicAuth   BasicAuth
+	AuthSession string
+}
+
+// BasicAuth -
+type BasicAuth struct {
+	Name     string `json:"name"`
+	Password string `json:"password"`
 }
 
 // ServerInfo - Base struct from couchdb /
@@ -107,99 +121,159 @@ func ConvertTLSVersion(s string) (i uint16) {
 
 func (s *Server) createTransportLayer() {
 	// Default config if nothing is set
-	if s.TLSConfig == nil {
-		s.TLSConfig = &tls.Config{
+	if s.tlsConfig == nil {
+		s.tlsConfig = &tls.Config{
 			InsecureSkipVerify: true,
 			CipherSuites: []uint16{
 				tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
 			},
 		}
 	}
-	s.HTTPTransport = &http.Transport{
-		TLSClientConfig: s.TLSConfig,
+	s.httpTransport = &http.Transport{
+		TLSClientConfig: s.tlsConfig,
 	}
 }
 
 func (s *Server) createClientLayer() {
-	s.HTTPClient = &http.Client{
-		Transport: s.HTTPTransport,
+	s.httpClient = &http.Client{
+		Transport: s.httpTransport,
 	}
 }
 
 func (s *Server) newConnection() {
 	if s.SSL == true {
-		s.SchemeAuthority = "https://" + s.Address + ":" + strconv.Itoa(s.Port)
+		s.schemeAuthority = "https://" + s.Address + ":" + strconv.Itoa(s.Port)
 	} else {
-		s.SchemeAuthority = "http://" + s.Address + ":" + strconv.Itoa(s.Port)
+		s.schemeAuthority = "http://" + s.Address + ":" + strconv.Itoa(s.Port)
 	}
 	s.createTransportLayer()
 	s.createClientLayer()
 }
 
-func (s *Server) newQuery(method string, path string, data []byte) (body []byte, err error) {
-	if s.HTTPClient == nil {
+func (s *Server) query(method string, path string, data io.Reader) (b []byte, err error) {
+	if s.httpClient == nil {
 		s.newConnection()
 	}
-	url := s.SchemeAuthority + path
-	req, err := http.NewRequest(method, url, strings.NewReader(string(data)))
+	url := s.schemeAuthority + path
+	req, err := http.NewRequest(method, url, data)
 	if err != nil {
 		return
 	}
-	resp, err := s.HTTPClient.Do(req)
-	if err == nil {
-		defer resp.Body.Close()
-		body, err = ioutil.ReadAll(resp.Body)
+
+	switch method {
+	case "PUT", "POST":
+		req.Header.Set("Content-Type", "application/json")
+	default:
+		req.Header.Set("Accept", "application/json")
+	}
+
+	s.setCookie(req)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		err = s.authenticate()
+		if err != nil {
+			return
+		}
+		return s.query(method, path, data) // Recurse handle defer on resp.Body.Close() better
+	}
+	return ioutil.ReadAll(resp.Body) // Since resp.Body.Close() we cannot return io.Reader
+}
+
+func (s *Server) setCookie(r *http.Request) {
+	if s.Authentication.AuthSession != "" {
+		r.AddCookie(&http.Cookie{
+			Name:  "AuthSession",
+			Value: s.Authentication.AuthSession,
+		})
+	}
+}
+
+// authenticate - Is called upon if http.StatusUnauthorized is returned.
+// Cannot inherite query-method since we need the cookie.
+func (s *Server) authenticate() (err error) {
+	url := s.schemeAuthority + "/_session"
+	auth, err := json.Marshal(s.Authentication.BasicAuth)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(auth))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		err = errors.New("[-] Bad credentials")
+		return
+	}
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "AuthSession" {
+			s.Authentication.AuthSession = cookie.Value
+		}
 	}
 	return
 }
 
-// GetServerInfo - returns a struct with information about the database
-func (s *Server) GetServerInfo() (serverInfo ServerInfo, err error) {
+// GetServerInfo - returns a struct with information about the server
+func (s *Server) GetServerInfo() (si ServerInfo, err error) {
 	path := "/"
-	body, err := s.newQuery("GET", path, nil)
+	body, err := s.query("GET", path, nil)
+	if err != nil {
+		return
+	}
+	err = json.Unmarshal(body, &si)
 	if err == nil {
-		err = json.Unmarshal(body, &serverInfo)
-		err = json.Unmarshal(body, &s.ServerInfo)
+		s.ServerInfo = si
 	}
 	return
 }
 
 // GetAllDatabases - returns an array with all dbs
-func (s *Server) GetAllDatabases() (allDatabases []string, err error) {
+func (s *Server) GetAllDatabases() (ss []string, err error) {
 	path := "/_all_dbs"
-	body, err := s.newQuery("GET", path, nil)
-	if err == nil {
-		err = json.Unmarshal(body, &allDatabases)
+	body, err := s.query("GET", path, nil)
+	if err != nil {
+		return
 	}
+	err = json.Unmarshal(body, &ss)
 	return
 }
 
 // GetView - returns a struct for a view response
-func (s *Server) GetView(document string, view string) (viewResponse ViewResponse, err error) {
+func (s *Server) GetView(document string, view string) (vr ViewResponse, err error) {
 	path := "/" + s.Database + "/_design/" + document + "/_view/" + view
-	body, err := s.newQuery("GET", path, nil)
-	if err == nil {
-		err = json.Unmarshal(body, &viewResponse)
+	body, err := s.query("GET", path, nil)
+	if err != nil {
+		return
 	}
+	err = json.Unmarshal(body, &vr)
 	return
 }
 
-// GetDocument - returns a single document in []byte
-func (s *Server) GetDocument(document string) (getResponse []byte, err error) {
+// GetDocument - returns a single document as raw bytes
+func (s *Server) GetDocument(document string) (b []byte, err error) {
 	path := "/" + s.Database + "/" + document
-	getResponse, err = s.newQuery("GET", path, nil)
-	return
+	return s.query("GET", path, nil)
 }
 
 // PutDocument -
-func (s *Server) PutDocument(document string, documentData []byte) (putResponse PutResponse, err error) {
+func (s *Server) PutDocument(document string, data io.Reader) (pr PutResponse, err error) {
 	path := "/" + s.Database + "/" + document
-	body, err := s.newQuery("PUT", path, documentData)
-	if err == nil {
-		err = json.Unmarshal(body, &putResponse)
+	body, err := s.query("PUT", path, data)
+	if err != nil {
+		return
 	}
+	err = json.Unmarshal(body, &pr)
 	return
 }
+
 func (s Server) String() (text string) {
 	text = "[*] - IP: " + s.Address + "\n"
 	text += "[*] - UUID: " + s.ServerInfo.UUID + "\n"
