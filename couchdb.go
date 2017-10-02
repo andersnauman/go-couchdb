@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -17,6 +16,7 @@ type Server struct {
 	Address         string
 	Port            int
 	SSL             bool
+	TLSMinVersion   uint16
 	Authentication  Authentication
 	Database        string
 	schemeAuthority string
@@ -71,62 +71,15 @@ type PutResponse struct {
 	Reason string `json:"reason"`
 }
 
-var cipherSuiteTable = map[string]uint16{
-	"TLS_RSA_WITH_RC4_128_SHA":                tls.TLS_RSA_WITH_RC4_128_SHA,
-	"TLS_RSA_WITH_3DES_EDE_CBC_SHA":           tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-	"TLS_RSA_WITH_AES_128_CBC_SHA":            tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-	"TLS_RSA_WITH_AES_256_CBC_SHA":            tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-	"TLS_RSA_WITH_AES_128_GCM_SHA256":         tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-	"TLS_RSA_WITH_AES_256_GCM_SHA384":         tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-	"TLS_ECDHE_ECDSA_WITH_RC4_128_SHA":        tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
-	"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA":    tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-	"TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA":    tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
-	"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256": tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-	"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384": tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-	"TLS_ECDHE_RSA_WITH_RC4_128_SHA":          tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
-	"TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA":     tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
-	"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA":      tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-	"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA":      tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-	"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256":   tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384":   tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-}
-
-var tlsVersionTable = map[string]uint16{
-	"VersionSSL30": tls.VersionSSL30,
-	"VersionTLS10": tls.VersionTLS10,
-	"VersionTLS11": tls.VersionTLS11,
-	"VersionTLS12": tls.VersionTLS12,
-}
-
-// ConvertCipherSuiteArray - Returns a proper uint16 array instead of readable string array
-func ConvertCipherSuiteArray(sa []string) (ia []uint16, err error) {
-	for _, cipher := range sa {
-		if cipherInt := cipherSuiteTable[cipher]; cipherInt != 0 {
-			ia = append(ia, cipherInt)
-		}
-	}
-	if len(ia) == 0 {
-		err = errors.New("No ciphers appended")
-	}
-	return
-}
-
-// ConvertTLSVersion - Returns a proper uint16 value instead of readable string
-func ConvertTLSVersion(s string) (i uint16) {
-	if i = tlsVersionTable[s]; i == 0 {
-		fmt.Println("No or bad TLS version configured. Fallback is TLS 1.0")
-	}
-	return
-}
-
 func (s *Server) createTransportLayer() {
 	// Default config if nothing is set
 	if s.tlsConfig == nil {
 		s.tlsConfig = &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: false,
 			CipherSuites: []uint16{
 				tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
 			},
+			MinVersion: tls.VersionTLS10,
 		}
 	}
 	s.httpTransport = &http.Transport{
