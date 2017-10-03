@@ -103,12 +103,9 @@ func (s *Server) newConnection() {
 	s.createClientLayer()
 }
 
-func (s *Server) query(method string, path string, data io.Reader) (b []byte, err error) {
-	if s.httpClient == nil {
-		s.newConnection()
-	}
+func (s *Server) newRequest(method string, path string, data io.Reader) (req *http.Request, err error) {
 	url := s.schemeAuthority + path
-	req, err := http.NewRequest(method, url, data)
+	req, err = http.NewRequest(method, url, data)
 	if err != nil {
 		return
 	}
@@ -120,7 +117,23 @@ func (s *Server) query(method string, path string, data io.Reader) (b []byte, er
 		req.Header.Set("Accept", "application/json")
 	}
 
-	s.setCookie(req)
+	if s.Authentication.AuthSession != "" {
+		req.AddCookie(&http.Cookie{
+			Name:  "AuthSession",
+			Value: s.Authentication.AuthSession,
+		})
+	}
+	return
+}
+
+func (s *Server) query(method string, path string, data io.Reader) (b []byte, err error) {
+	if s.httpClient == nil {
+		s.newConnection()
+	}
+	req, err := s.newRequest(method, path, data)
+	if err != nil {
+		return
+	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return
@@ -136,28 +149,17 @@ func (s *Server) query(method string, path string, data io.Reader) (b []byte, er
 	return ioutil.ReadAll(resp.Body) // Since resp.Body.Close() we cannot return io.Reader
 }
 
-func (s *Server) setCookie(r *http.Request) {
-	if s.Authentication.AuthSession != "" {
-		r.AddCookie(&http.Cookie{
-			Name:  "AuthSession",
-			Value: s.Authentication.AuthSession,
-		})
-	}
-}
-
 // authenticate - Is called upon if http.StatusUnauthorized is returned.
-// Cannot inherite query-method since we need the cookie.
 func (s *Server) authenticate() (err error) {
-	url := s.schemeAuthority + "/_session"
 	auth, err := json.Marshal(s.Authentication.BasicAuth)
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(auth))
+	url := "/_session"
+	req, err := s.newRequest("POST", url, bytes.NewBuffer(auth))
 	if err != nil {
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return
