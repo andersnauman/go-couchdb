@@ -52,14 +52,9 @@ type vendor struct {
 
 // ViewResponse - Basic struct for a view
 type ViewResponse struct {
-	TotalRow int               `json:"total_rows"`
-	Offset   int               `json:"offset"`
-	Rows     []viewResponseRow `json:"rows"`
-}
-type viewResponseRow struct {
-	ID    string `json:"id"`
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	TotalRow int                      `json:"total_rows"`
+	Offset   int                      `json:"offset"`
+	Rows     []map[string]interface{} `json:"rows"`
 }
 
 // PutResponse - Generic struct for all answers
