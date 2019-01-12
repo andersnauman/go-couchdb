@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"strconv"
 )
@@ -19,6 +20,8 @@ type Server struct {
 	TLSMinVersion   uint16
 	Authentication  Authentication
 	Database        string
+	Replicate       bool
+	ReplicateTo     []net.IP
 	schemeAuthority string
 	ServerInfo      ServerInfo
 	tlsConfig       *tls.Config
@@ -141,7 +144,7 @@ func (s *Server) query(method string, path string, data io.Reader) (b []byte, er
 		}
 		return s.query(method, path, data) // Recurse handle defer on resp.Body.Close() better
 	}
-	return ioutil.ReadAll(resp.Body) // Since resp.Body.Close() we cannot return io.Reader
+	return ioutil.ReadAll(resp.Body) // Because of resp.Body.Close() we cannot return io.Reader
 }
 
 // authenticate - Is called upon if http.StatusUnauthorized is returned.
